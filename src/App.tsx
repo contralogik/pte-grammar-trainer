@@ -1,4 +1,6 @@
 import {
+  ArrowDown,
+  ArrowUp,
   BarChart3,
   BookOpen,
   CheckCircle2,
@@ -6,6 +8,7 @@ import {
   ClipboardList,
   Home,
   Layers3,
+  ListChecks,
   RotateCcw,
   Sparkles,
   Target,
@@ -38,7 +41,7 @@ import type {
   QuestionType,
 } from './types'
 
-type Page = 'dashboard' | 'topics' | 'practice' | 'explanation' | 'mistakes' | 'progress'
+type Page = 'dashboard' | 'topics' | 'practice' | 'explanation' | 'mistakes' | 'history' | 'progress'
 
 const questions = rawQuestions as GrammarQuestion[]
 
@@ -47,6 +50,7 @@ const navItems: { id: Page; label: string; icon: typeof Home }[] = [
   { id: 'topics', label: 'Grammar Topics', icon: BookOpen },
   { id: 'practice', label: 'Practice', icon: Target },
   { id: 'mistakes', label: 'Mistake Book', icon: ClipboardList },
+  { id: 'history', label: '练习记录', icon: ListChecks },
   { id: 'progress', label: 'Progress', icon: BarChart3 },
 ]
 
@@ -57,6 +61,75 @@ const sameAnswer = (a: string | string[], b: string | string[]) =>
   Array.isArray(a) || Array.isArray(b)
     ? JSON.stringify(a) === JSON.stringify(b)
     : a.trim().toLowerCase() === b.trim().toLowerCase()
+
+function formatOrderedAnswer(answer: string | string[]) {
+  return Array.isArray(answer)
+    ? answer.map((item, index) => `${index + 1}. ${item}`).join('\n')
+    : answer
+}
+
+function buildDetailedExplanation(
+  question: GrammarQuestion,
+  userAnswer: string | string[],
+  isCorrect: boolean,
+) {
+  const topic = topicLabel(question.topic)
+  const subTopic = subTopicLabel(question.subTopic)
+  const user = formatAnswer(userAnswer)
+  const correct = formatAnswer(question.correctAnswer)
+  const resultLine = isCorrect
+    ? `你这次选择的是“${user}”，答案正确。`
+    : `你这次选择的是“${user}”，正确答案应该是“${correct}”。`
+
+  const intro = `这道题考查的是“${topic} - ${subTopic}”。题干是：${question.question}`
+  const baseRule = question.explanationCN.replace(/\s+/g, ' ').trim()
+
+  if (question.questionType === 'Error Correction') {
+    const correction = question.correction
+      ? `本题真正需要修改的片段是“${correct}”，应改为“${question.correction}”。`
+      : `本题真正需要修改的片段是“${correct}”。`
+    return [
+      intro,
+      resultLine,
+      correction,
+      `做错误纠正题时，先不要急着看中文意思，要先找句子的主语、谓语、修饰成分和固定搭配。这里的错误不是整句逻辑，而是局部语法形式不符合“${topic}”规则。`,
+      baseRule,
+      `记忆方法：${question.memoryTip}`,
+    ].join('\n\n')
+  }
+
+  if (question.questionType === 'Fill in the Blanks') {
+    return [
+      intro,
+      resultLine,
+      `空格所在位置决定了它需要承担特定语法功能，所以不能只看哪个选项“意思差不多”。正确选项“${correct}”能和空格前后的词自然连接，并且符合“${topic}”规则。`,
+      `如果选错，通常是因为只看了局部词义，忽略了句子结构、词形或搭配要求。${question.commonMistake}`,
+      baseRule,
+      `记忆方法：${question.memoryTip}`,
+    ].join('\n\n')
+  }
+
+  if (question.questionType === 'Sentence Combination') {
+    return [
+      intro,
+      resultLine,
+      `句子合并题的关键是保留两个句子的原意，同时避免碎片句、重复主语、连接词误用或从句结构错误。正确答案“${correct}”把信息合并成一个完整、自然的学术句子。`,
+      `检查这类题时，可以问自己三件事：第一，主句是否完整；第二，从句或连接结构是否正确；第三，合并后有没有改变原意。`,
+      baseRule,
+      `记忆方法：${question.memoryTip}`,
+    ].join('\n\n')
+  }
+
+  return [
+    intro,
+    resultLine,
+    `你的排序是：\n${formatOrderedAnswer(userAnswer)}`,
+    `正确排序是：\n${formatOrderedAnswer(question.correctAnswer)}`,
+    `段落排序题要先找“总起句”，再找解释原因、举例或考试关联，最后找结论句。这个题的正确顺序是先提出 ${topic} 的作用，再解释原因，然后连接到 PTE 场景，最后用 regular review 做总结。`,
+    baseRule,
+    `记忆方法：${question.memoryTip}`,
+  ].join('\n\n')
+}
 
 const todayKey = () => new Date().toISOString().slice(0, 10)
 
@@ -381,10 +454,11 @@ function PracticePage({
       userAnswer: null as string | string[] | null,
       isCorrect: null as boolean | null,
       dragAnswer: firstQuestion.questionType === 'Reorder Paragraph' ? firstQuestion.options : [],
+      selectedOrderIndex: null as number | null,
     }
   })
 
-  const { current, userAnswer, isCorrect, dragAnswer } = practice
+  const { current, userAnswer, isCorrect, dragAnswer, selectedOrderIndex } = practice
 
   const resetToQuestion = (next: GrammarQuestion) => {
     setPractice({
@@ -392,6 +466,7 @@ function PracticePage({
       userAnswer: null,
       isCorrect: null,
       dragAnswer: next.questionType === 'Reorder Paragraph' ? next.options : [],
+      selectedOrderIndex: null,
     })
   }
 
@@ -414,7 +489,14 @@ function PracticePage({
     const next = [...dragAnswer]
     const [item] = next.splice(from, 1)
     next.splice(to, 0, item)
-    setPractice((value) => ({ ...value, dragAnswer: next }))
+    setPractice((value) => ({ ...value, dragAnswer: next, selectedOrderIndex: to }))
+  }
+
+  const moveSelectedOrderItem = (index: number, direction: -1 | 1) => {
+    if (userAnswer !== null) return
+    const nextIndex = index + direction
+    if (nextIndex < 0 || nextIndex >= dragAnswer.length) return
+    moveDragItem(index, nextIndex)
   }
 
   return (
@@ -472,9 +554,12 @@ function PracticePage({
         <div className="mt-6">
           {current.questionType === 'Reorder Paragraph' ? (
             <div className="space-y-3">
+              <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                点击句子选中后用“上移/下移”调整顺序，也可以直接拖拽排序。
+              </p>
               {dragAnswer.map((option, index) => (
                 <div
-                  key={option}
+                  key={`${option}-${index}`}
                   draggable={userAnswer === null}
                   onDragStart={(event) => event.dataTransfer.setData('text/plain', String(index))}
                   onDragOver={(event) => event.preventDefault()}
@@ -482,10 +567,53 @@ function PracticePage({
                     event.preventDefault()
                     moveDragItem(Number(event.dataTransfer.getData('text/plain')), index)
                   }}
-                  className="cursor-grab rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm active:cursor-grabbing"
+                  onClick={() => {
+                    if (userAnswer === null) {
+                      setPractice((value) => ({ ...value, selectedOrderIndex: index }))
+                    }
+                  }}
+                  className={clsx(
+                    'rounded-md border px-4 py-3 text-sm transition active:cursor-grabbing',
+                    userAnswer === null && 'cursor-grab',
+                    selectedOrderIndex === index
+                      ? 'border-emerald-400 bg-emerald-50 ring-2 ring-emerald-100'
+                      : 'border-slate-200 bg-slate-50',
+                  )}
                 >
-                  <span className="mr-3 font-semibold text-emerald-700">{index + 1}</span>
-                  {option}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex gap-3">
+                      <span className="font-semibold text-emerald-700">{index + 1}</span>
+                      <span>{option}</span>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <button
+                        type="button"
+                        disabled={userAnswer !== null || index === 0}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          moveSelectedOrderItem(index, -1)
+                        }}
+                        className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        title="上移"
+                      >
+                        <ArrowUp size={14} />
+                        上移
+                      </button>
+                      <button
+                        type="button"
+                        disabled={userAnswer !== null || index === dragAnswer.length - 1}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          moveSelectedOrderItem(index, 1)
+                        }}
+                        className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        title="下移"
+                      >
+                        <ArrowDown size={14} />
+                        下移
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ))}
               <button
@@ -589,6 +717,7 @@ function ExplanationPage({
   }
 
   const { question, userAnswer, isCorrect } = answerState
+  const detailedExplanation = buildDetailedExplanation(question, userAnswer, isCorrect)
 
   return (
     <div className="space-y-5">
@@ -605,8 +734,7 @@ function ExplanationPage({
           <InfoBlock label="正确答案" value={formatAnswer(question.correctAnswer)} />
         </div>
         <div className="mt-5 grid gap-4 lg:grid-cols-2">
-          <DetailBlock title="中文解析" body={question.explanationCN} />
-          <DetailBlock title="English Rule" body={question.explanationEN} />
+          <DetailBlock title="中文解析" body={detailedExplanation} wide />
           <DetailBlock title="常见错误" body={question.commonMistake} />
           <DetailBlock title="PTE考试关联" body={question.pteRelevance} />
           <DetailBlock title="记忆提示" body={question.memoryTip} />
@@ -634,11 +762,11 @@ function InfoBlock({ label, value }: { label: string; value: string }) {
   )
 }
 
-function DetailBlock({ title, body }: { title: string; body: string }) {
+function DetailBlock({ title, body, wide = false }: { title: string; body: string; wide?: boolean }) {
   return (
-    <article className="rounded-md border border-slate-200 p-4">
+    <article className={clsx('rounded-md border border-slate-200 p-4', wide && 'lg:col-span-2')}>
       <h3 className="text-sm font-semibold">{title}</h3>
-      <p className="mt-2 text-sm leading-6 text-slate-600">{body}</p>
+      <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-600">{body}</p>
     </article>
   )
 }
@@ -723,6 +851,115 @@ function MistakeBook({
               </button>
             </section>
           ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PracticeHistory({ records }: { records: PracticeRecord[] }) {
+  const [topicFilter, setTopicFilter] = useState('All')
+  const [typeFilter, setTypeFilter] = useState<QuestionType | 'All'>('All')
+  const filtered = records.filter(
+    (record) =>
+      (topicFilter === 'All' || record.topic === topicFilter) &&
+      (typeFilter === 'All' || record.questionType === typeFilter),
+  )
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+        <div>
+          <h2 className="text-2xl font-semibold tracking-normal sm:text-3xl">练习记录</h2>
+          <p className="mt-2 text-sm text-slate-500">
+            这里列出你已经做过的题，方便回看做题轨迹和答案。
+          </p>
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <select
+            value={topicFilter}
+            onChange={(event) => setTopicFilter(event.target.value)}
+            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+          >
+            <option value="All">全部语法点</option>
+            {GRAMMAR_TOPICS.map((topic) => (
+              <option key={topic} value={topic}>
+                {topicLabel(topic)}
+              </option>
+            ))}
+          </select>
+          <select
+            value={typeFilter}
+            onChange={(event) => setTypeFilter(event.target.value as QuestionType | 'All')}
+            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+          >
+            <option value="All">全部题型</option>
+            {QUESTION_TYPES.map((type) => (
+              <option key={type} value={type}>
+                {questionTypeLabel(type)}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <StatCard label="已做题目" value={`${records.length}`} note="本机累计记录" />
+        <StatCard
+          label="筛选后"
+          value={`${filtered.length}`}
+          note="当前列表中的题目"
+          tone="good"
+        />
+        <StatCard
+          label="正确题数"
+          value={`${filtered.filter((record) => record.isCorrect).length}`}
+          note="按当前筛选统计"
+        />
+      </div>
+
+      <div className="space-y-3">
+        {filtered.length === 0 ? (
+          <section className="rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center">
+            <p className="font-semibold">还没有练习记录</p>
+            <p className="mt-2 text-sm text-slate-500">完成练习后，题目会自动出现在这里。</p>
+          </section>
+        ) : (
+          filtered.map((record) => {
+            const question = questions.find((item) => item.id === record.questionId)
+            return (
+              <section key={record.id} className="rounded-lg border border-slate-200 bg-white p-5">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex flex-wrap gap-2 text-xs font-semibold text-slate-500">
+                    <span className="rounded bg-slate-100 px-2 py-1">{topicLabel(record.topic)}</span>
+                    <span className="rounded bg-slate-100 px-2 py-1">
+                      {questionTypeLabel(record.questionType)}
+                    </span>
+                    <span
+                      className={clsx(
+                        'rounded px-2 py-1',
+                        record.isCorrect
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : 'bg-red-50 text-red-700',
+                      )}
+                    >
+                      {record.isCorrect ? '正确' : '错误'}
+                    </span>
+                  </div>
+                  <span className="text-xs text-slate-500">
+                    {new Date(record.answeredAt).toLocaleString()}
+                  </span>
+                </div>
+                <p className="mt-4 text-base font-medium leading-7">
+                  {question?.question ?? `题目 ID：${record.questionId}`}
+                </p>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <InfoBlock label="你的答案" value={formatAnswer(record.userAnswer)} />
+                  <InfoBlock label="正确答案" value={formatAnswer(record.correctAnswer)} />
+                </div>
+              </section>
+            )
+          })
         )}
       </div>
     </div>
@@ -830,6 +1067,10 @@ function App() {
 
     if (page === 'mistakes') {
       return <MistakeBook mistakes={mistakes} setMistakes={setMistakes} />
+    }
+
+    if (page === 'history') {
+      return <PracticeHistory records={records} />
     }
 
     if (page === 'progress') {
